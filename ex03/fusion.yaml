@@ -7,9 +7,51 @@ services:
         FROM postgres:17.5-bookworm
 
         COPY --from=data --chown=postgres:postgres --chmod=555 ./customer/ /customer/
+        COPY --from=data --chown=postgres:postgres --chmod=555 ./item/ /item/
 
         COPY --chmod=444 <<-EOF /docker-entrypoint-initdb.d/0-init.sql
         	CREATE TYPE event_types AS ENUM ('cart', 'purchase', 'remove_from_cart', 'view');
+
+            CREATE TABLE brands(
+              id            SERIAL        PRIMARY KEY,
+              brand_name    TEXT          NOT NULL      UNIQUE
+            );
+
+            CREATE TABLE items(
+              id            SERIAL        PRIMARY KEY,
+              product_id    INTEGER       NOT NULL,
+              category_id   BIGINT,
+              category_code TEXT[],
+              brand         TEXT          REFERENCES brands(brand_name)
+            );
+
+            CREATE TEMP TABLE items_staging (
+              product_id TEXT,
+              category_id TEXT,
+              category_code TEXT,
+              brand TEXT
+            );
+
+            COPY items_staging
+            FROM '/item/item.csv' WITH (FORMAT csv, HEADER true);
+
+            INSERT INTO brands (brand_name)
+            SELECT DISTINCT brand
+            FROM items_staging
+            WHERE brand IS NOT NULL AND brand <> ''
+            ON CONFLICT (brand_name) DO NOTHING;
+
+            INSERT INTO items (product_id, category_id, category_code, brand)
+            SELECT
+              product_id::INTEGER,
+              MAX(category_id)::BIGINT,
+              CASE
+                WHEN MAX(category_code) IS NULL OR MAX(category_code) = '' THEN NULL
+                ELSE string_to_array(MAX(category_code), '.')
+              END,
+              NULLIF(MAX(brand), '')
+            FROM items_staging
+            GROUP BY product_id;
         EOF
 
         COPY --chmod=444 <<-EOF /0-data.sql.template
@@ -74,8 +116,15 @@ services:
               delta IS DISTINCT FROM INTERVAL '1 second' AND
               delta IS DISTINCT FROM INTERVAL '0 second';
 
+            CREATE VIEW customers_with_items_view AS
+            SELECT event_time, event_type, customers_view.product_id, category_id, category_code, brand, price, user_id, user_session
+            FROM customers_view
+            LEFT OUTER JOIN
+            items
+            ON items.product_id = customers_view.product_id;
+
             DROP TABLE IF EXISTS customers;
-            CREATE TABLE customers AS SELECT * FROM customers_view;
+            CREATE TABLE customers AS SELECT * FROM customers_with_items_view;
         EOF
 
         COPY --chmod=755 <<-'EOF' /entrypoint.sh

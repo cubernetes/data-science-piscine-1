@@ -32,9 +32,6 @@ services:
         # 'a0-view' will always come after '9...-data', so this will always run after
         # all the tables have been imported
         COPY --chmod=444 <<-'EOF' /docker-entrypoint-initdb.d/a0-view.sql
-            DROP TABLE IF EXISTS customers;
-            DROP VIEW IF EXISTS customers_view;
-
             DO $$$$
             DECLARE
                 tbl_name text;
@@ -53,11 +50,13 @@ services:
 
                 IF union_sql <> '' THEN
                     union_sql := left(union_sql, length(union_sql) - length(union_stmt));
-                    EXECUTE 'CREATE TABLE customers AS ' || union_sql;
-                    EXECUTE 'CREATE VIEW customers_view AS ' || union_sql;
+                    EXECUTE 'DROP VIEW IF EXISTS customers_view; CREATE VIEW customers_view AS ' || union_sql;
                 END IF;
             END
             $$$$;
+
+            DROP TABLE IF EXISTS customers;
+            CREATE TABLE customers AS SELECT * FROM customers_view;
         EOF
 
         COPY --chmod=755 <<-'EOF' /entrypoint.sh
